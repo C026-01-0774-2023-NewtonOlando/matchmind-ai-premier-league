@@ -25,14 +25,12 @@ st.markdown(
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800;900&family=JetBrains+Mono:wght@600;800&display=swap');
 
-    /* Main Streamlit App Background */
     .stApp {
         background: radial-gradient(circle at 15% 10%, #240229 0%, #09000c 55%, #050007 100%) !important;
         color: #f8fafc !important;
         font-family: 'Inter', sans-serif !important;
     }
 
-    /* Tighten top padding for maximum broadcast screen real estate */
     .block-container {
         padding-top: 1.2rem !important;
         padding-bottom: 0.5rem !important;
@@ -41,7 +39,6 @@ st.markdown(
         max-width: 100% !important;
     }
 
-    /* Sleek Premier League Sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, #1b0220 0%, #0d0011 100%) !important;
         border-right: 1px solid rgba(0, 255, 133, 0.22) !important;
@@ -50,7 +47,6 @@ st.markdown(
         color: #f1f5f9 !important;
     }
 
-    /* Sidebar Buttons */
     .stButton > button {
         background: linear-gradient(135deg, #00ff85 0%, #059669 100%) !important;
         color: #1a001f !important;
@@ -274,10 +270,19 @@ def build_premier_league_telemetry(setup_mode: str):
     prev_carrier_team = None
     team_possession_streak_frames = 0
 
+    # Pre-group by frame once so the 618-frame loop runs 20x faster on Streamlit Cloud
+    balls_by_frame = {
+        int(f): df for f, df in tracks[tracks["class_name"] == "ball"].groupby("frame")
+    }
+    players_by_frame = {
+        int(f): df
+        for f, df in tracks[tracks["class_name"] == "player"].groupby("frame")
+    }
+    empty_df = tracks.iloc[0:0]
+
     for f in range(1, max_frame + 1):
-        f_df = tracks[tracks["frame"] == f]
-        balls = f_df[f_df["class_name"] == "ball"]
-        p_sub = f_df[f_df["class_name"] == "player"]
+        balls = balls_by_frame.get(f, empty_df)
+        p_sub = players_by_frame.get(f, empty_df)
 
         active_ball_center = None
         if not balls.empty:
@@ -772,7 +777,7 @@ def build_premier_league_telemetry(setup_mode: str):
 
 
 # ============================================================
-# SIDEBAR CONTROLS & TELEMETRY LOADING
+# SIDEBAR CONTROLS, .ENV / SECRETS LOADER & TELEMETRY LOADING
 # ============================================================
 st.sidebar.markdown(
     """
@@ -804,18 +809,44 @@ agent_mode = st.sidebar.radio(
     ["Analyst Mode", "Fan Mode", "Broadcast Mode"],
 )
 
-with st.sidebar.expander("☁️ Microsoft AI Foundry Config"):
+# Auto-load local .env file if present on laptop
+env_path = BASE_DIR / ".env"
+if env_path.exists():
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.strip().startswith("#"):
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+# Read from Streamlit Cloud Secrets first, then fall back to local .env
+default_endpoint = os.getenv(
+    "AZURE_OPENAI_ENDPOINT", "https://models.github.ai/inference"
+)
+default_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+try:
+    if "AZURE_OPENAI_ENDPOINT" in st.secrets:
+        default_endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
+    if "AZURE_OPENAI_API_KEY" in st.secrets:
+        default_key = st.secrets["AZURE_OPENAI_API_KEY"]
+except Exception:
+    pass
+
+with st.sidebar.expander("☁️ Microsoft AI Foundry Config", expanded=True):
+    st.markdown(
+        "🔗 **[Click here to generate a free GitHub Models Token](https://github.com/settings/tokens?type=beta)**"
+    )
     azure_endpoint = st.text_input(
-        "Foundry Endpoint",
-        value=os.getenv(
-            "AZURE_OPENAI_ENDPOINT", "https://models.inference.ai.azure.com"
-        ),
+        "Foundry / GitHub Models Endpoint",
+        value=default_endpoint,
     )
     azure_key = st.text_input(
-        "Foundry / GitHub Token",
+        "Foundry / GitHub Token (github_pat_...)",
         type="password",
-        value=os.getenv("AZURE_OPENAI_API_KEY", ""),
+        value=default_key,
     )
+    if azure_key:
+        st.caption("✅ Token loaded & ready for live LLM calls!")
+    else:
+        st.caption("ℹ️ Paste a token above or in Streamlit Secrets for live LLM calls.")
 
 dossiers_df, passes_df, timeline_df, tracks_df, js_payload = (
     build_premier_league_telemetry(setup_mode)
@@ -842,6 +873,11 @@ if st.sidebar.button("☁️ Generate Foundry Tactical Brief", use_container_wid
             from openai import OpenAI
 
             client = OpenAI(base_url=azure_endpoint, api_key=azure_key)
+            model_name = (
+                "openai/gpt-4o-mini"
+                if "models.github.ai" in azure_endpoint
+                else "gpt-4o-mini"
+            )
             prompt = (
                 f"Respond in {language} using {agent_mode}. Summarize Player ID #{selected_cloud_pid} "
                 f"(Team {p_tot['team']}): Distance={p_tot['total_dist_m']}m, Dribbles={p_tot['total_drib']} "
@@ -850,7 +886,7 @@ if st.sidebar.button("☁️ Generate Foundry Tactical Brief", use_container_wid
                 f"Press Resistance={p_tot['press_res']}/100. Keep it to 3 punchy bullet points."
             )
             resp = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=220,
             )
@@ -906,7 +942,6 @@ html_component = f"""
     box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
   }}
 
-  /* PULSING KEYFRAMES */
   @keyframes pulseGlow {{
     0% {{ box-shadow: 0 0 0 0 rgba(0, 255, 133, 0.6); }}
     70% {{ box-shadow: 0 0 0 9px rgba(0, 255, 133, 0); }}
@@ -1600,7 +1635,6 @@ DATA.events.forEach(ev => {{
   evContainer.appendChild(btn);
 }});
 
-// Click-to-seek on Control vs Chaos waveform canvas
 waveCanvas.addEventListener('click', (e) => {{
   const rect = waveCanvas.getBoundingClientRect();
   const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -1609,7 +1643,6 @@ waveCanvas.addEventListener('click', (e) => {{
   updateUI();
 }});
 
-// Interactive Click on 2D Pitch Radar to select any Player ID dot!
 canvas.addEventListener('click', (e) => {{
   const rect = canvas.getBoundingClientRect();
   const scaleX = canvas.width / rect.width;
@@ -1730,7 +1763,6 @@ function drawControlWaveform(currentFrame) {{
   wCtx.clearRect(0, 0, W, H);
   const midY = H / 2;
 
-  // Subtle background grid
   wCtx.strokeStyle = 'rgba(255,255,255,0.15)';
   wCtx.lineWidth = 1;
   wCtx.beginPath();
@@ -1739,7 +1771,6 @@ function drawControlWaveform(currentFrame) {{
 
   const wave = DATA.ctrl_wave || [];
   if (wave.length > 1) {{
-    // Shaded area under curve
     const grad = wCtx.createLinearGradient(0, 0, 0, H);
     grad.addColorStop(0, 'rgba(0, 255, 133, 0.38)');
     grad.addColorStop(0.5, 'rgba(4, 245, 255, 0.05)');
@@ -1757,7 +1788,6 @@ function drawControlWaveform(currentFrame) {{
     wCtx.fillStyle = grad;
     wCtx.fill();
 
-    // Waveform stroke line
     wCtx.beginPath();
     wave.forEach((pt, idx) => {{
       const x = (pt[0] / DATA.max_frame) * W;
@@ -1770,7 +1800,6 @@ function drawControlWaveform(currentFrame) {{
     wCtx.stroke();
   }}
 
-  // Pass event markers on waveform
   DATA.events.forEach(ev => {{
     const ex = (ev.frame / DATA.max_frame) * W;
     wCtx.fillStyle = ev.outcome.includes('completed') ? '#04f5ff' : '#ff2882';
@@ -1782,7 +1811,6 @@ function drawControlWaveform(currentFrame) {{
     wCtx.stroke();
   }});
 
-  // Current playhead bar & glowing knob
   const playX = (currentFrame / DATA.max_frame) * W;
   wCtx.strokeStyle = '#facc15';
   wCtx.lineWidth = 2.5;
@@ -1800,13 +1828,11 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
 
-  // Lush striped Premier League turf
   for (let i = 0; i < 12; i++) {{
     ctx.fillStyle = i % 2 === 0 ? '#114224' : '#15522d';
     ctx.fillRect((W / 12) * i, 0, W / 12, H);
   }}
 
-  // Tactical Third Divider Lines & Labels
   ctx.strokeStyle = 'rgba(255,255,255,0.24)';
   ctx.setLineDash([4, 4]);
   ctx.beginPath();
@@ -1815,7 +1841,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
   ctx.stroke();
   ctx.setLineDash([]);
 
-  // Outer pitch lines, penalty boxes, and center circle
   ctx.strokeStyle = 'rgba(255,255,255,0.7)';
   ctx.lineWidth = 1.6;
   ctx.strokeRect(16, 12, W - 32, H - 24);
@@ -1831,7 +1856,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
   const mapX = x => 16 + (x / 1920.0) * (W - 32);
   const mapY = y => 12 + ((y - 260.0) / 780.0) * (H - 24);
 
-  // 1. Draw Tactical Spotlight / Voronoi Space Glow around Carrier & Best Pass Target
   if (pressObj && pressObj.carrier_xy) {{
     const cx = mapX(pressObj.carrier_xy[0]);
     const cy = mapY(pressObj.carrier_xy[1]);
@@ -1844,7 +1868,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
     ctx.fill();
   }}
 
-  // 2. Draw Red Pressing Threat Lines from opposing defenders within 12m
   if (pressObj && pressObj.carrier_xy && pressObj.press_lines) {{
     const cx = mapX(pressObj.carrier_xy[0]);
     const cy = mapY(pressObj.carrier_xy[1]);
@@ -1860,7 +1883,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
     }});
   }}
 
-  // 3. Draw Counterfactual AI Best Pass Option vector in glowing Cyan dashed line
   if (pressObj && pressObj.carrier_xy && pressObj.best_opt) {{
     const cx = mapX(pressObj.carrier_xy[0]);
     const cy = mapY(pressObj.carrier_xy[1]);
@@ -1890,7 +1912,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
     ctx.stroke();
   }}
 
-  // 4. Draw actual pass vectors up to current frame
   DATA.events.filter(e => e.frame <= frame).forEach(ev => {{
     const x1 = mapX(ev.px), y1 = mapY(ev.py);
     const x2 = mapX(ev.rx), y2 = mapY(ev.ry);
@@ -1901,7 +1922,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
     ctx.stroke();
   }});
 
-  // 5. Draw active player's movement trail in Gold
   const trail = (DATA.player_trails[String(activePid)] || []).filter(pt => pt[0] <= frame);
   if (trail.length > 1) {{
     ctx.strokeStyle = '#facc15';
@@ -1915,7 +1935,6 @@ function drawPitchMinimap(frame, sampleKey, activePid, pressObj) {{
     ctx.stroke();
   }}
 
-  // 6. Draw all tracked players & store coordinates for click-to-inspect
   currentRenderedPlayers = [];
   const rFrame = DATA.radar_frames[sampleKey];
   if (rFrame && rFrame.p) {{
@@ -2059,7 +2078,6 @@ function updateUI() {{
     ctrl: 55.0, press: 22.0, nearest_m: 11.2, pressers: 0, label: "Unpressed Control (11.2m Space)", carrier_xy: [960, 540], press_lines: [], best_opt: null
   }};
 
-  // Highlight active event button if near timestamp
   DATA.events.forEach(ev => {{
     const b = document.getElementById(`evBtn_${{ev.event_id}}`);
     if (b) b.classList.toggle('active-ev', Math.abs(ev.sec - sec) <= 0.6);
