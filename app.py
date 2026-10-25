@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # ============================================================
-# GLOBAL STREAMLIT DARK BROADCAST STUDIO CSS
+# GLOBAL STREAMLIT DARK BROADCAST STUDIO CSS & PASSWORD EYE LOCK
 # ============================================================
 st.markdown(
     """
@@ -32,8 +32,8 @@ st.markdown(
     }
 
     .block-container {
-        padding-top: 1.2rem !important;
-        padding-bottom: 0.5rem !important;
+        padding-top: 1.0rem !important;
+        padding-bottom: 1.5rem !important;
         padding-left: 1.5rem !important;
         padding-right: 1.5rem !important;
         max-width: 100% !important;
@@ -41,10 +41,38 @@ st.markdown(
 
     [data-testid="stSidebar"] {
         background: linear-gradient(180deg, #1b0220 0%, #0d0011 100%) !important;
-        border-right: 1px solid rgba(0, 255, 133, 0.22) !important;
+        border-right: 1px solid rgba(0, 255, 133, 0.25) !important;
     }
-    [data-testid="stSidebar"] * {
+
+    [data-testid="stSidebar"] label,
+    [data-testid="stSidebar"] p,
+    [data-testid="stSidebar"] span,
+    [data-testid="stSidebar"] h1,
+    [data-testid="stSidebar"] h2,
+    [data-testid="stSidebar"] h3 {
         color: #f1f5f9 !important;
+    }
+
+    [data-testid="stSidebar"] input,
+    [data-testid="stSidebar"] textarea,
+    [data-testid="stSidebar"] [data-baseweb="select"] div,
+    [data-testid="stSidebar"] [data-baseweb="select"] span {
+        color: #16001a !important;
+        font-weight: 700 !important;
+    }
+
+    .stTextInput input, .stTextArea textarea, [data-baseweb="select"] div {
+        color: #16001a !important;
+        font-weight: 700 !important;
+    }
+
+    /* COMPLETELY HIDE & DISABLE THE EYE REVEAL BUTTON ON PASSWORD INPUTS */
+    button[title="Show password text"],
+    button[aria-label="Show password text"],
+    [data-baseweb="input"] button {
+        display: none !important;
+        visibility: hidden !important;
+        pointer-events: none !important;
     }
 
     .stButton > button {
@@ -98,24 +126,9 @@ def get_pitch_zone_and_attack_ratio(
     right_gk_team: int,
     width_px: float = 1920.0,
 ) -> tuple[str, float]:
-    """
-    Goalkeeper-proximity tactical third calculation:
-    - Left Side (x < 640, near Left Goalkeeper):
-        * If carrier_team == left_gk_team -> Defensive Third (Team {carrier_team})
-        * If carrier_team == right_gk_team -> Attacking Third (Team {carrier_team})
-    - Right Side (x > 1280, near Right Goalkeeper):
-        * If carrier_team == right_gk_team -> Defensive Third (Team {carrier_team})
-        * If carrier_team == left_gk_team -> Attacking Third (Team {carrier_team})
-    - Middle (640 <= x <= 1280):
-        * Middle Third (Team {carrier_team})
-    """
     t_id = int(carrier_team)
     raw_ratio = float(np.clip(x_px / max(1.0, width_px), 0.0, 1.0))
-
-    if t_id == int(left_gk_team):
-        attack_ratio = raw_ratio
-    else:
-        attack_ratio = 1.0 - raw_ratio
+    attack_ratio = raw_ratio if t_id == int(left_gk_team) else (1.0 - raw_ratio)
 
     left_cut = width_px / 3.0
     right_cut = (width_px * 2.0) / 3.0
@@ -123,15 +136,12 @@ def get_pitch_zone_and_attack_ratio(
     if x_px < left_cut:
         if t_id == int(left_gk_team):
             return f"Defensive Third (Team {t_id})", attack_ratio
-        else:
-            return f"Attacking Third (Team {t_id})", attack_ratio
+        return f"Attacking Third (Team {t_id})", attack_ratio
     elif x_px > right_cut:
         if t_id == int(right_gk_team):
             return f"Defensive Third (Team {t_id})", attack_ratio
-        else:
-            return f"Attacking Third (Team {t_id})", attack_ratio
-    else:
-        return f"Middle Third (Team {t_id})", attack_ratio
+        return f"Attacking Third (Team {t_id})", attack_ratio
+    return f"Middle Third (Team {t_id})", attack_ratio
 
 
 @st.cache_resource
@@ -242,10 +252,37 @@ def build_premier_league_telemetry(setup_mode: str):
     player_rows["speed_kmh"] = np.clip(
         player_rows["speed_px_s_smooth"] * PX_TO_METERS * 3.6, 0.0, 34.5
     )
-
     player_rows["team_id"] = player_rows["track_id"].map(
         lambda x: team_lookup.get(int(x), 0)
     )
+
+    balls_df = (
+        tracks[tracks["class_name"] == "ball"]
+        .sort_values(["frame", "confidence"], ascending=[True, False])
+        .drop_duplicates("frame")
+    )
+    ball_dict = {
+        int(r.frame): (float(r.center_x), float(r.center_y))
+        for r in balls_df.itertuples()
+    }
+
+    players_by_frame = {}
+    for r in player_rows.itertuples():
+        f_int = int(r.frame)
+        if f_int not in players_by_frame:
+            players_by_frame[f_int] = []
+        players_by_frame[f_int].append(
+            (int(r.track_id), float(r.foot_x), float(r.foot_y), int(r.team_id))
+        )
+
+    pass_records = []
+    for er in passes.itertuples():
+        f_ev = int(er.frame)
+        p_id = int(er.passer_id)
+        r_id = int(er.receiver_id)
+        pt = team_lookup.get(p_id, 0)
+        rt = team_lookup.get(r_id, 0)
+        pass_records.append((f_ev, p_id, r_id, pt, rt, pt == rt))
 
     last_known_ball = None
     candidate_holder_id = None
@@ -270,24 +307,12 @@ def build_premier_league_telemetry(setup_mode: str):
     prev_carrier_team = None
     team_possession_streak_frames = 0
 
-    # Pre-group by frame once so the 618-frame loop runs 20x faster on Streamlit Cloud
-    balls_by_frame = {
-        int(f): df for f, df in tracks[tracks["class_name"] == "ball"].groupby("frame")
-    }
-    players_by_frame = {
-        int(f): df
-        for f, df in tracks[tracks["class_name"] == "player"].groupby("frame")
-    }
-    empty_df = tracks.iloc[0:0]
-
     for f in range(1, max_frame + 1):
-        balls = balls_by_frame.get(f, empty_df)
-        p_sub = players_by_frame.get(f, empty_df)
+        p_list = players_by_frame.get(f, [])
+        bc = ball_dict.get(f)
 
         active_ball_center = None
-        if not balls.empty:
-            best_b = balls.sort_values("confidence", ascending=False).iloc[0]
-            bc = (float(best_b["center_x"]), float(best_b["center_y"]))
+        if bc is not None:
             active_ball_center = bc
             if (
                 last_known_ball is not None
@@ -309,13 +334,17 @@ def build_premier_league_telemetry(setup_mode: str):
             ball_x_by_frame[f] = active_ball_center[0]
 
         raw_holder_id = None
-        if active_ball_center is not None and not p_sub.empty:
-            fx = (p_sub["x1"] + p_sub["x2"]) / 2.0
-            fy = p_sub["y2"]
-            dists = np.hypot(fx - active_ball_center[0], fy - active_ball_center[1])
-            min_idx = dists.idxmin()
-            if dists.loc[min_idx] <= POSSESSION_LIMIT_PX:
-                raw_holder_id = int(p_sub.loc[min_idx, "track_id"])
+        if active_ball_center is not None and p_list:
+            min_d = 999999.0
+            best_pid = None
+            bx_c, by_c = active_ball_center
+            for pid_i, px_i, py_i, _ in p_list:
+                d = math.hypot(px_i - bx_c, py_i - by_c)
+                if d < min_d:
+                    min_d = d
+                    best_pid = pid_i
+            if min_d <= POSSESSION_LIMIT_PX:
+                raw_holder_id = best_pid
 
         if raw_holder_id is not None and raw_holder_id == candidate_holder_id:
             candidate_holder_streak += 1
@@ -341,18 +370,16 @@ def build_premier_league_telemetry(setup_mode: str):
         raw_carrier_by_frame[f] = raw_holder_id
         hud_carrier_by_frame[f] = cur_c
 
-        carrier_rows_now = p_sub[p_sub["track_id"] == cur_c]
-        if not carrier_rows_now.empty:
-            bx_now = float(
-                (carrier_rows_now.iloc[0]["x1"] + carrier_rows_now.iloc[0]["x2"]) / 2.0
-            )
-            by_now = float(carrier_rows_now.iloc[0]["y2"])
-        elif active_ball_center is not None:
-            bx_now = active_ball_center[0]
-            by_now = active_ball_center[1]
-        else:
-            bx_now = ball_x_by_frame.get(f - 1, 960.0)
-            by_now = 540.0
+        bx_now, by_now = None, None
+        for pid_i, px_i, py_i, _ in p_list:
+            if pid_i == cur_c:
+                bx_now, by_now = px_i, py_i
+                break
+        if bx_now is None:
+            if active_ball_center is not None:
+                bx_now, by_now = active_ball_center
+            else:
+                bx_now, by_now = ball_x_by_frame.get(f - 1, 960.0), 540.0
 
         ball_x_by_frame[f] = bx_now
 
@@ -382,20 +409,17 @@ def build_premier_league_telemetry(setup_mode: str):
             t0_poss = round(100.0 * team0_poss_frames / tot_p, 1)
             t1_poss = round(100.0 - t0_poss, 1)
 
-            ev_so_far = passes[passes["frame"] <= f]
             t0_att, t0_comp, t1_att, t1_comp = 0, 0, 0, 0
-            for _, er in ev_so_far.iterrows():
-                pt = team_lookup.get(int(er["passer_id"]), 0)
-                rt = team_lookup.get(int(er["receiver_id"]), 0)
-                is_c = pt == rt
-                if pt == 0:
-                    t0_att += 1
-                    if is_c:
-                        t0_comp += 1
-                else:
-                    t1_att += 1
-                    if is_c:
-                        t1_comp += 1
+            for f_ev, _, _, pt, _, is_c in pass_records:
+                if f_ev <= f:
+                    if pt == 0:
+                        t0_att += 1
+                        if is_c:
+                            t0_comp += 1
+                    else:
+                        t1_att += 1
+                        if is_c:
+                            t1_comp += 1
 
             team_stats_by_sample[str(f)] = {
                 "t0_poss": t0_poss,
@@ -412,21 +436,16 @@ def build_premier_league_telemetry(setup_mode: str):
             teammate_candidates = []
             pts = []
 
-            for _, pr in p_sub.iterrows():
-                ptid = int(pr["track_id"])
-                px_i = float((pr["x1"] + pr["x2"]) / 2.0)
-                py_i = float(pr["y2"])
-                pt_team = team_lookup.get(ptid, 0)
-                pts.append([ptid, round(px_i, 1), round(py_i, 1), pt_team])
-
+            for pid_i, px_i, py_i, pt_team in p_list:
+                pts.append([pid_i, round(px_i, 1), round(py_i, 1), pt_team])
                 if pt_team != c_team:
                     opp_positions.append((px_i, py_i))
                     dist_m = math.hypot(px_i - bx_now, py_i - by_now) * PX_TO_METERS
                     opp_dists_m.append(dist_m)
                     if dist_m <= PRESS_RADIUS_M:
                         pressing_opp_coords.append([round(px_i, 1), round(py_i, 1)])
-                elif ptid != cur_c:
-                    teammate_candidates.append((ptid, px_i, py_i))
+                elif pid_i != cur_c:
+                    teammate_candidates.append((pid_i, px_i, py_i))
 
             nearest_opp_m = round(min(opp_dists_m), 1) if opp_dists_m else 18.5
             pressers_count = len(pressing_opp_coords)
@@ -522,10 +541,10 @@ def build_premier_league_telemetry(setup_mode: str):
             )
             radar_frames[str(f)] = {"p": pts, "b": b_pt}
 
-    player_rows["is_carrier"] = player_rows.apply(
-        lambda r: raw_carrier_by_frame.get(int(r["frame"])) == int(r["track_id"]),
-        axis=1,
-    )
+    player_rows["is_carrier"] = [
+        raw_carrier_by_frame.get(int(f)) == int(tid)
+        for f, tid in zip(player_rows["frame"], player_rows["track_id"])
+    ]
     player_rows["carry_step_px"] = np.where(
         player_rows["is_carrier"], player_rows["clean_step_px"], 0.0
     )
@@ -541,9 +560,13 @@ def build_premier_league_telemetry(setup_mode: str):
     player_timelines = {}
     player_totals = {}
     player_trails = {}
+    sample_frames_list = list(range(1, max_frame + 1, 4)) + [max_frame]
+
+    empty_df = player_rows.iloc[0:0]
+    p_rows_by_id = {int(tid): df for tid, df in player_rows.groupby("track_id")}
 
     for pid in active_id_list:
-        p_df = player_rows[player_rows["track_id"] == pid].sort_values("frame")
+        p_df = p_rows_by_id.get(pid, empty_df)
         base_r = active_players_df[active_players_df["player_track_id"] == pid].iloc[0]
         max_drib_cap = int(base_r.get("dribble_count", 3))
         p_team = team_lookup.get(pid, 0)
@@ -553,18 +576,14 @@ def build_premier_league_telemetry(setup_mode: str):
         total_touches = int(p_df["is_carrier"].sum())
         peak_spd = round(float(p_df["speed_kmh"].max()), 1) if not p_df.empty else 0.0
 
-        p_ev_all = passes[passes["passer_id"] == pid]
-        total_att = len(p_ev_all)
-        total_comp = sum(
-            1
-            for _, er in p_ev_all.iterrows()
-            if team_lookup.get(int(er["passer_id"]), 0)
-            == team_lookup.get(int(er["receiver_id"]), 0)
-        )
-        total_rec = int((passes["receiver_id"] == pid).sum())
+        p_ev_list = [r for r in pass_records if r[1] == pid]
+        r_ev_list = [r for r in pass_records if r[2] == pid]
+        total_att = len(p_ev_list)
+        total_comp = sum(1 for r in p_ev_list if r[5])
+        total_rec = len(r_ev_list)
 
         avg_x = float(p_df["foot_x"].mean()) if not p_df.empty else 960.0
-        _, avg_att_ratio = get_pitch_zone_and_attack_ratio(
+        primary_zone, avg_att_ratio = get_pitch_zone_and_attack_ratio(
             avg_x, p_team, left_gk_team, right_gk_team, WIDTH
         )
         zone_multiplier = 0.65 + 0.95 * avg_att_ratio
@@ -596,6 +615,7 @@ def build_premier_league_telemetry(setup_mode: str):
         player_totals[str(pid)] = {
             "pid": pid,
             "team": p_team,
+            "primary_zone": primary_zone,
             "total_dist_m": max(0.1, total_dist_m),
             "total_carry_m": max(0.0, total_carry_m),
             "total_drib": max_drib_cap,
@@ -609,43 +629,35 @@ def build_premier_league_telemetry(setup_mode: str):
             "radar": [prog_rating, ret_rating, work_rating, drib_rating, pace_rating],
         }
 
-        trail_pts = []
-        for _, tr_row in p_df[p_df["frame"] % 4 == 1].iterrows():
-            trail_pts.append(
-                [
-                    int(tr_row["frame"]),
-                    round(float(tr_row["foot_x"]), 1),
-                    round(float(tr_row["foot_y"]), 1),
-                ]
+        sub_trail = p_df[p_df["frame"] % 4 == 1]
+        player_trails[str(pid)] = [
+            [int(f_v), round(float(fx_v), 1), round(float(fy_v), 1)]
+            for f_v, fx_v, fy_v in zip(
+                sub_trail["frame"], sub_trail["foot_x"], sub_trail["foot_y"]
             )
-        player_trails[str(pid)] = trail_pts
+        ]
+
+        p_frames_arr = p_df["frame"].to_numpy()
+        cum_dist = np.cumsum(p_df["clean_step_px"].to_numpy()) * PX_TO_METERS
+        cum_carry = np.cumsum(p_df["carry_step_px"].to_numpy()) * PX_TO_METERS
+        cum_touches = np.cumsum(p_df["is_carrier"].to_numpy(dtype=int))
+        spd_arr = p_df["speed_kmh"].to_numpy()
+        cum_max_spd = np.maximum.accumulate(spd_arr) if len(spd_arr) > 0 else spd_arr
+        fx_arr = p_df["foot_x"].to_numpy()
+        carrier_frames_all = p_df[p_df["is_carrier"]]["frame"].to_numpy()
 
         p_frames_dict = {}
-        for sample_f in list(range(1, max_frame + 1, 4)) + [max_frame]:
-            sub_p = p_df[p_df["frame"] <= sample_f]
-            sub_ev = passes[passes["frame"] <= sample_f]
+        for sample_f in sample_frames_list:
+            att = sum(1 for r in p_ev_list if r[0] <= sample_f)
+            comp = sum(1 for r in p_ev_list if r[0] <= sample_f and r[5])
+            rec = sum(1 for r in r_ev_list if r[0] <= sample_f)
 
-            p_sub_ev = sub_ev[sub_ev["passer_id"] == pid]
-            att = len(p_sub_ev)
-            comp = sum(
-                1
-                for _, er in p_sub_ev.iterrows()
-                if team_lookup.get(int(er["passer_id"]), 0)
-                == team_lookup.get(int(er["receiver_id"]), 0)
-            )
-            rec = int((sub_ev["receiver_id"] == pid).sum())
-
-            ref_x = (
-                float(sub_p.iloc[-1]["foot_x"])
-                if not sub_p.empty
-                else ball_x_by_frame.get(sample_f, 960.0)
-            )
-            zone, cur_att_ratio = get_pitch_zone_and_attack_ratio(
-                ref_x, p_team, left_gk_team, right_gk_team, WIDTH
-            )
-            live_z_mult = 0.65 + 0.95 * cur_att_ratio
-
-            if sub_p.empty:
+            idx = int(np.searchsorted(p_frames_arr, sample_f, side="right")) - 1
+            if idx < 0:
+                ref_x = ball_x_by_frame.get(sample_f, 960.0)
+                zone, _ = get_pitch_zone_and_attack_ratio(
+                    ref_x, p_team, left_gk_team, right_gk_team, WIDTH
+                )
                 p_frames_dict[str(sample_f)] = {
                     "att": att,
                     "comp": comp,
@@ -660,19 +672,22 @@ def build_premier_league_telemetry(setup_mode: str):
                     "zone": zone,
                 }
             else:
-                touches = int(sub_p["is_carrier"].sum())
-                carry_m = round(float(sub_p["carry_step_px"].sum() * PX_TO_METERS), 2)
-                dist_m = round(float(sub_p["clean_step_px"].sum() * PX_TO_METERS), 1)
-                max_spd = round(float(sub_p["speed_kmh"].max()), 1)
-                cur_spd = round(float(sub_p.iloc[-1]["speed_kmh"]), 1)
+                ref_x = float(fx_arr[idx])
+                zone, cur_att_ratio = get_pitch_zone_and_attack_ratio(
+                    ref_x, p_team, left_gk_team, right_gk_team, WIDTH
+                )
+                live_z_mult = 0.65 + 0.95 * cur_att_ratio
 
-                c_frames = sub_p[sub_p["is_carrier"]]["frame"].tolist()
+                touches = int(cum_touches[idx])
+                carry_m = round(float(cum_carry[idx]), 2)
+                dist_m = round(float(cum_dist[idx]), 1)
+                max_spd = round(float(cum_max_spd[idx]), 1)
+                cur_spd = round(float(spd_arr[idx]), 1)
+
+                c_sub = carrier_frames_all[carrier_frames_all <= sample_f]
                 drib = 0
-                if c_frames:
-                    spells = 1
-                    for i in range(1, len(c_frames)):
-                        if c_frames[i] - c_frames[i - 1] > 12:
-                            spells += 1
+                if len(c_sub) > 0:
+                    spells = 1 + int(np.sum(np.diff(c_sub) > 12))
                     drib = (
                         min(max(1, max_drib_cap), spells)
                         if (carry_m >= 0.30 or touches >= 2)
@@ -707,23 +722,21 @@ def build_premier_league_telemetry(setup_mode: str):
         p_team = team_lookup.get(p_id, 0)
         r_team = team_lookup.get(r_id, 0)
 
-        p_sub = player_rows[
-            (player_rows["track_id"] == p_id) & (player_rows["frame"] <= f_ev)
-        ].tail(4)
-        r_sub = player_rows[
-            (player_rows["track_id"] == r_id) & (player_rows["frame"] <= f_ev)
-        ].tail(4)
+        p_df_e = p_rows_by_id.get(p_id, empty_df)
+        r_df_e = p_rows_by_id.get(r_id, empty_df)
+        p_sub = p_df_e[p_df_e["frame"] <= f_ev].tail(4)
+        r_sub = r_df_e[r_df_e["frame"] <= f_ev].tail(4)
         px = round(float(p_sub["foot_x"].mean()), 1) if not p_sub.empty else 600.0
         py = round(float(p_sub["foot_y"].mean()), 1) if not p_sub.empty else 500.0
         rx = round(float(r_sub["foot_x"].mean()), 1) if not r_sub.empty else 1000.0
         ry = round(float(r_sub["foot_y"].mean()), 1) if not r_sub.empty else 500.0
 
-        f_opps = player_rows[
-            (player_rows["frame"] == f_ev) & (player_rows["team_id"] != p_team)
-        ]
+        f_plist = players_by_frame.get(f_ev, [])
         min_x, max_x = min(px, rx), max(px, rx)
-        bypassed = int(
-            ((f_opps["foot_x"] >= min_x) & (f_opps["foot_x"] <= max_x)).sum()
+        bypassed = sum(
+            1
+            for _, ox, _, ot in f_plist
+            if ot != p_team and min_x <= ox <= max_x
         )
 
         same_team = p_team == r_team
@@ -776,15 +789,141 @@ def build_premier_league_telemetry(setup_mode: str):
     return dossiers, passes, timeline, tracks, js_payload
 
 
+def run_matchmind_agent(
+    user_query: str,
+    selected_pid: int,
+    js_payload: dict,
+    language: str,
+    persona: str,
+    azure_endpoint: str,
+    azure_key: str,
+    use_cloud_llm: bool = True,
+) -> str:
+    p_tot = js_payload["player_totals"].get(
+        str(selected_pid), list(js_payload["player_totals"].values())[0]
+    )
+    pid = p_tot["pid"]
+    p_events = [
+        ev
+        for ev in js_payload["events"]
+        if ev["passer"] == pid or ev["receiver"] == pid
+    ]
+    final_team_stats = js_payload["team_stats_by_sample"].get(
+        str(js_payload["max_frame"]),
+        {"t0_poss": 93.0, "t1_poss": 7.0, "t0_passes": "7/8", "t1_passes": "0/1"},
+    )
+
+    wave = js_payload.get("ctrl_wave", [])
+    min_ctrl = min((pt[1] for pt in wave), default=-65.0)
+    max_ctrl = max((pt[1] for pt in wave), default=96.0)
+
+    ev_lines = []
+    for ev in p_events:
+        role = "PASSER" if ev["passer"] == pid else "RECEIVER"
+        status = (
+            "COMPLETED" if "completed" in ev["outcome"] else "TURNOVER / CONTESTED"
+        )
+        ev_lines.append(
+            f"  * Event #{ev['event_id']} ({ev['sec']}s, Frame {ev['frame']}): [{role}] ID #{ev['passer']} (T{ev['passer_team']}) -> ID #{ev['receiver']} (T{ev['receiver_team']}) | Dist: {ev['travel_m']}m | Speed: {ev['speed_kmh']} km/h | Bypassed: {ev['bypassed']} Opp | xP: {ev['xp']}% | {status}"
+        )
+    ev_summary_str = (
+        "\n".join(ev_lines)
+        if ev_lines
+        else "  * No direct pass attempts/receptions logged; primary impact via ball carrying & off-ball positioning."
+    )
+
+    if use_cloud_llm and azure_key and azure_endpoint.startswith("http"):
+        all_roster_lines = [
+            f"ID #{v['pid']} (Team {v['team']}, {v['primary_zone']}): Dist={v['total_dist_m']}m, Dribbles={v['total_drib']} ({v['total_carry_m']}m carry), Passes={v['total_comp']}/{v['total_att']}, Rec={v['total_rec']}, xT=+{v['xt']}, PeakSpd={v['peak_spd']}km/h, PressRes={v['press_res']}/100"
+            for v in js_payload["player_totals"].values()
+        ]
+        system_context = f"""You are MatchMind AI, an elite Premier League Multi-Agent Tactical Copilot built on YOLOv8, BoT-SORT, Spatial Kinematics, and Microsoft AI Foundry.
+Respond in {language} adopting the {persona} persona.
+
+=== 1. SELECTED PLAYER DOSSIER: PLAYER ID #{pid} (TEAM {p_tot['team']}) ===
+- Primary Tactical Zone: {p_tot['primary_zone']} (Goalkeeper-relative: Left Goal = Team {js_payload['left_gk_team']} GK, Right Goal = Team {js_payload['right_gk_team']} GK)
+- Total Distance Covered: {p_tot['total_dist_m']} m
+- Progressive Dribbles & Ball Carries: {p_tot['total_drib']} dribble spell(s) covering {p_tot['total_carry_m']} m ({p_tot['total_touches']} ball-carrier frames)
+- Passing Record: {p_tot['total_comp']} completed / {p_tot['total_att']} attempted passes | {p_tot['total_rec']} pass receptions
+- Expected Threat Generated: +{p_tot['xt']} xT | Press Resistance Score: {p_tot['press_res']}/100
+- Peak Sprint Speed: {p_tot['peak_spd']} km/h
+- 5-Axis Radar Ratings (0-99): Progression={p_tot['radar'][0]}, Retention={p_tot['radar'][1]}, Workrate={p_tot['radar'][2]}, Dribbling={p_tot['radar'][3]}, Pace={p_tot['radar'][4]}
+
+=== 2. PASS & RECEPTION EVENTS INVOLVING PLAYER ID #{pid} ===
+{ev_summary_str}
+
+=== 3. FULL MATCH CONTROL VS. CHAOS & SPATIAL PRESSING ENGINE ===
+- Team Possession Split: Team 0 = {final_team_stats['t0_poss']}% ({final_team_stats['t0_passes']} passes) | Team 1 = {final_team_stats['t1_poss']}% ({final_team_stats['t1_passes']} passes)
+- Phase 1 (0.0s - 3.8s): High-Chaos Turnover & Pressing Transition (Index drops to {min_ctrl}) triggered by Event #1 turnover (ID #8 -> ID #28) with multiple defenders closing within 6-9m.
+- Phase 2 (4.0s - 25.7s): Unpressed Structured Tactical Control (Index climbs to +{max_ctrl}) across 8 consecutive completed passes with >10m defender separation.
+
+=== 4. ALL ACTIVE PLAYERS TELEMETRY SUMMARY ===
+{chr(10).join(all_roster_lines)}
+
+=== 5. FRAMEWORK OPERATING MANUAL ===
+- Video & Telemetry Sync: Click 'PLAY BROADCAST', use '-1F / +1F' for frame stepping, or '0.5x Slow-Mo' for slow-motion inspection.
+- Interactive 2D Radar: Click any player dot (#ID) on the 2D pitch canvas to inspect their dossier. Red dashed lines show opponents pressing within 12m; Cyan dashed arrow shows the Counterfactual AI Best Pass Target (xP%).
+- Click-to-Seek Waveform & Pass Table: Click anywhere on the Control vs. Chaos waveform chart or any row in the Pass Table to jump the video to that moment.
+"""
+        try:
+            from openai import OpenAI
+
+            client = OpenAI(
+                base_url=azure_endpoint.strip(),
+                api_key=azure_key.strip(),
+                timeout=8.0,
+            )
+            model_name = (
+                "openai/gpt-4o-mini"
+                if "models.github.ai" in azure_endpoint
+                else "gpt-4o-mini"
+            )
+            resp = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": system_context},
+                    {"role": "user", "content": user_query},
+                ],
+                max_tokens=420,
+                temperature=0.35,
+            )
+            return f"🟢 **Microsoft AI Foundry Live Agent (`{model_name}` • {persona} • {language}):**\n\n" + (
+                resp.choices[0].message.content or ""
+            )
+        except Exception:
+            pass
+
+    report = [
+        f"🧠 **MatchMind Agentic AI Report — Player ID #{pid} (Team {p_tot['team']}) [{persona} • {language}]**",
+        f"#### 1. ⚡ Dribbling, Ball-Carrying & Physical Breakdown (`Player ID #{pid}`)\n"
+        f"- **Progressive Carries & Dribbles:** Logged **{p_tot['total_drib']} dribble sequence(s)** carrying the ball **{p_tot['total_carry_m']} m** across **{p_tot['total_touches']} possession frames** inside the **{p_tot['primary_zone']}**.\n"
+        f"- **Workrate & Sprint Telemetry:** Covered **{p_tot['total_dist_m']} m** at a peak sprint speed of **{p_tot['peak_spd']} km/h**, generating **+{p_tot['xt']} Expected Threat (xT)** with a **{p_tot['press_res']}/100 Press Resistance** rating.\n"
+        f"- **5-Axis Attribute Profile:** `PROG {p_tot['radar'][0]}` • `RET {p_tot['radar'][1]}` • `WORK {p_tot['radar'][2]}` • `DRIB {p_tot['radar'][3]}` • `PACE {p_tot['radar'][4]}`.",
+        f"#### 2. 🎯 Passing, Line-Breaking & Counterfactual Vision (`{p_tot['total_comp']}/{p_tot['total_att']} Completed | {p_tot['total_rec']} Receptions`)\n"
+        f"{ev_summary_str}",
+        f"#### 3. 📈 Control vs. Chaos & Spatial Pressing Explanation\n"
+        f"- **How It Works:** Our engine measures live Euclidean distance (`m`) from the ball carrier to every opposing player and counts defenders inside a **12m pressing radius**.\n"
+        f"- **Why Chaos Happens (`0.0s–3.8s`, Index `{min_ctrl}`):** Following Event #1 (`ID #8 → ID #28` turnover), opposing players swarm within `6–9m` of the ball, triggering red pressing lines on the 2D radar.\n"
+        f"- **Why Control Emerges (`4.0s–25.7s`, Index `+{max_ctrl}`):** Once Team {js_payload['right_gk_team']} settles possession and spreads the pitch (`>10m` separation from defenders), the match shifts into **Unpressed Tactical Control** across 8 completed passes (`Team 0: {final_team_stats['t0_poss']}% poss` vs `Team 1: {final_team_stats['t1_poss']}% poss`).",
+        "#### 4. 🧭 MatchMind AI Framework Operating Guidelines\n"
+        "1. **Sync Video & Telemetry:** Click **`▶️ PLAY BROADCAST`**, use **`0.5x Slow-Mo`** for slow-motion tactical review, or click **`⏮️ -1F` / `+1F ⏭️`** to step frame-by-frame.\n"
+        "2. **Click Any Player on the 2D Radar:** Click any moving player dot (`#ID`) on the 2D Pitch Minimap to switch `Auto-Follow` off and inspect that player's live dossier. Watch the **cyan dashed arrow** for the AI's Counterfactual Best Pass Target (`xP%`).\n"
+        "3. **Scrub the Control vs. Chaos Waveform:** Click anywhere on the green/pink momentum graph under the pitch radar (or click any row in the **Pass Table**) to jump the video straight to that moment.\n"
+        "4. **Sidebar Controls:** Toggle **Goalkeeper Side Alignment** to flip pitch thirds and team possession, switch **Persona/Language**, or check **`🔊 Live AI Voice`** for real-time audio commentary.",
+    ]
+
+    return "\n\n".join(report)
+
+
 # ============================================================
-# SIDEBAR CONTROLS, .ENV / SECRETS LOADER & TELEMETRY LOADING
+# SIDEBAR CONTROLS & SECURE BACKEND VAULT TOKEN LOADER
 # ============================================================
 st.sidebar.markdown(
     """
     <div style="background:linear-gradient(135deg,#37003c 0%,#1f0224 100%);padding:14px 16px;border-radius:12px;border:1px solid rgba(0,255,133,0.35);margin-bottom:14px;">
         <div style="font-size:11px;font-weight:900;color:#00ff85;letter-spacing:1.2px;">MICROSOFT × PREMIER LEAGUE</div>
         <div style="font-size:20px;font-weight:900;color:#ffffff;margin-top:2px;">🦁 MatchMind AI Hub</div>
-        <div style="font-size:11.5px;color:#cbd5e1;margin-top:2px;">60-FPS Spatial & Multi-Agent Studio</div>
+        <div style="font-size:11.5px;color:#cbd5e1;margin-top:2px;">60-FPS Spatial & Agentic Studio</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -809,7 +948,6 @@ agent_mode = st.sidebar.radio(
     ["Analyst Mode", "Fan Mode", "Broadcast Mode"],
 )
 
-# Auto-load local .env file if present on laptop
 env_path = BASE_DIR / ".env"
 if env_path.exists():
     for line in env_path.read_text(encoding="utf-8").splitlines():
@@ -817,36 +955,47 @@ if env_path.exists():
             k, v = line.split("=", 1)
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
-# Read from Streamlit Cloud Secrets first, then fall back to local .env
-default_endpoint = os.getenv(
+raw_endpoint = os.getenv(
     "AZURE_OPENAI_ENDPOINT", "https://models.github.ai/inference"
 )
-default_key = os.getenv("AZURE_OPENAI_API_KEY", "")
+raw_key = os.getenv("AZURE_OPENAI_API_KEY", "")
 try:
     if "AZURE_OPENAI_ENDPOINT" in st.secrets:
-        default_endpoint = st.secrets["AZURE_OPENAI_ENDPOINT"]
+        raw_endpoint = str(st.secrets["AZURE_OPENAI_ENDPOINT"])
     if "AZURE_OPENAI_API_KEY" in st.secrets:
-        default_key = st.secrets["AZURE_OPENAI_API_KEY"]
+        raw_key = str(st.secrets["AZURE_OPENAI_API_KEY"])
 except Exception:
     pass
 
-with st.sidebar.expander("☁️ Microsoft AI Foundry Config", expanded=True):
-    st.markdown(
-        "🔗 **[Click here to generate a free GitHub Models Token](https://github.com/settings/tokens?type=beta)**"
-    )
+if "import " in raw_endpoint or not raw_endpoint.strip().startswith("http"):
+    vault_endpoint = "https://models.github.ai/inference"
+else:
+    vault_endpoint = raw_endpoint.strip()
+
+vault_key = "" if "import " in raw_key else raw_key.strip()
+
+with st.sidebar.expander("☁️ Microsoft AI Foundry Security Vault", expanded=False):
     azure_endpoint = st.text_input(
         "Foundry / GitHub Models Endpoint",
-        value=default_endpoint,
+        value=vault_endpoint,
     )
-    azure_key = st.text_input(
-        "Foundry / GitHub Token (github_pat_...)",
-        type="password",
-        value=default_key,
-    )
-    if azure_key:
-        st.caption("✅ Token loaded & ready for live LLM calls!")
+    if vault_key:
+        st.markdown(
+            """
+            <div style="background:rgba(0,255,133,0.12);border:1px solid rgba(0,255,133,0.4);padding:8px 11px;border-radius:8px;font-size:11.5px;font-weight:800;color:#00ff85;margin-top:4px;">
+                🔒 Cloud Token Secured in Backend Vault (Hidden & Unrevealable)
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        azure_key = vault_key
     else:
-        st.caption("ℹ️ Paste a token above or in Streamlit Secrets for live LLM calls.")
+        azure_key = st.text_input(
+            "Optional Custom Token Override",
+            type="password",
+            value="",
+            placeholder="Protected (Eye Reveal Disabled)",
+        )
 
 dossiers_df, passes_df, timeline_df, tracks_df, js_payload = (
     build_premier_league_telemetry(setup_mode)
@@ -860,52 +1009,40 @@ if not js_payload or video_b64 is None:
     st.stop()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("⚡ Microsoft Foundry Deep-Dive")
+st.sidebar.subheader("🤖 Agentic AI Quick Dossier")
 selected_cloud_pid = st.sidebar.selectbox(
-    "Select Player #ID for Cloud AI Dossier",
+    "Select Player #ID to Inspect",
     js_payload["active_ids"],
     format_func=lambda x: f"Player ID #{x} (Team {js_payload['player_totals'][str(x)]['team']})",
 )
-if st.sidebar.button("☁️ Generate Foundry Tactical Brief", use_container_width=True):
-    p_tot = js_payload["player_totals"][str(selected_cloud_pid)]
-    if azure_key:
-        try:
-            from openai import OpenAI
 
-            client = OpenAI(base_url=azure_endpoint, api_key=azure_key)
-            model_name = (
-                "openai/gpt-4o-mini"
-                if "models.github.ai" in azure_endpoint
-                else "gpt-4o-mini"
-            )
-            prompt = (
-                f"Respond in {language} using {agent_mode}. Summarize Player ID #{selected_cloud_pid} "
-                f"(Team {p_tot['team']}): Distance={p_tot['total_dist_m']}m, Dribbles={p_tot['total_drib']} "
-                f"({p_tot['total_carry_m']}m carry), Passes={p_tot['total_comp']}/{p_tot['total_att']}, "
-                f"Expected Threat=+{p_tot['xt']} xT, Peak Speed={p_tot['peak_spd']} km/h, "
-                f"Press Resistance={p_tot['press_res']}/100. Keep it to 3 punchy bullet points."
-            )
-            resp = client.chat.completions.create(
-                model=model_name,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=220,
-            )
-            st.sidebar.success("Microsoft AI Foundry Response:")
-            st.sidebar.markdown(resp.choices[0].message.content)
-        except Exception:
-            st.sidebar.info(
-                f"📌 **Foundry Tactical Brief (ID #{selected_cloud_pid}):** Covered **{p_tot['total_dist_m']}m** with **{p_tot['total_drib']} dribbles ({p_tot['total_carry_m']}m)**, **{p_tot['total_comp']}/{p_tot['total_att']} passes**, and **+{p_tot['xt']} xT**."
-            )
-    else:
-        st.sidebar.success(f"📌 Tactical Summary — Player ID #{selected_cloud_pid}:")
-        st.sidebar.markdown(
-            f"- **Progression & Threat:** Generated **+{p_tot['xt']} xT** across **{p_tot['total_drib']} dribbles ({p_tot['total_carry_m']}m)**.\n"
-            f"- **Passing & Press Resistance:** Completed **{p_tot['total_comp']}/{p_tot['total_att']} passes** (**{p_tot['press_res']}/100** press resistance).\n"
-            f"- **Physical Output:** Covered **{p_tot['total_dist_m']}m** at a peak sprint of **{p_tot['peak_spd']} km/h**."
+if "agent_response" not in st.session_state:
+    st.session_state["agent_response"] = run_matchmind_agent(
+        user_query=f"Provide a complete tactical breakdown of Player ID #{selected_cloud_pid}'s dribbles, passes, how Control vs. Chaos shifts during the match, and how to operate the MatchMind AI framework.",
+        selected_pid=selected_cloud_pid,
+        js_payload=js_payload,
+        language=language,
+        persona=agent_mode,
+        azure_endpoint=azure_endpoint,
+        azure_key=azure_key,
+        use_cloud_llm=False,
+    )
+
+if st.sidebar.button("⚡ Explain Player, Chaos & Guide", use_container_width=True):
+    with st.spinner("🤖 Querying Microsoft AI Foundry Agent..."):
+        st.session_state["agent_response"] = run_matchmind_agent(
+            user_query=f"Explain Player ID #{selected_cloud_pid}'s dribbles, ball carries, pass events, why Control vs. Chaos changes across the clip, and give the operating guideline for the framework.",
+            selected_pid=selected_cloud_pid,
+            js_payload=js_payload,
+            language=language,
+            persona=agent_mode,
+            azure_endpoint=azure_endpoint,
+            azure_key=azure_key,
+            use_cloud_llm=True,
         )
 
 # ============================================================
-# ULTRA-BROADCAST HTML5 INTERACTIVE COMMAND CENTER
+# ULTRA-BROADCAST HTML5 INTERACTIVE COMMAND CENTER (PITCH-ONLY CROP)
 # ============================================================
 payload_json_str = json.dumps(js_payload)
 
@@ -948,7 +1085,6 @@ html_component = f"""
     100% {{ box-shadow: 0 0 0 0 rgba(0, 255, 133, 0); }}
   }}
 
-  /* TOP PREMIER LEAGUE BROADCAST SCOREBUG */
   .pl-scoreboard {{
     display: grid;
     grid-template-columns: 1.15fr 1.85fr 1.1fr;
@@ -1028,7 +1164,6 @@ html_component = f"""
   }}
   .voice-pill:hover {{ background: rgba(250, 204, 21, 0.22); }}
 
-  /* MASTER INTERACTIVE CONTROL & TIMELINE BAR */
   .ctrl-bar {{
     display: flex;
     flex-wrap: wrap;
@@ -1114,7 +1249,6 @@ html_component = f"""
     outline: none;
   }}
 
-  /* MAIN 2-COLUMN BROADCAST STUDIO GRID */
   .main-grid {{
     display: grid;
     grid-template-columns: 1.18fr 1fr;
@@ -1131,22 +1265,76 @@ html_component = f"""
     backdrop-filter: blur(16px);
   }}
 
+  /* ==============================================================
+     CINEMATIC 21:9 PITCH-ONLY CROP VIEWPORT
+     Crops out top stadium stands/ad-boards AND bottom dugouts/watermark
+     so ONLY the green pitch and players are visible!
+     ============================================================== */
   .video-shell {{
     position: relative;
-    border-radius: 10px;
+    width: 100%;
+    aspect-ratio: 2.35 / 1;
+    border-radius: 12px;
     overflow: hidden;
-    border: 1px solid rgba(0, 255, 133, 0.35);
-    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.65);
-    background: #000;
+    border: 1px solid rgba(0, 255, 133, 0.42);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.75);
+    background: #0b2e13;
   }}
 
-  video {{
+  video#matchVideo {{
     width: 100%;
+    height: 100%;
+    object-fit: cover;
+    /* Zooms into the green turf: pushes top stadium & bottom watermark completely out of frame */
+    transform: scale(1.38) translateY(-4.5%);
+    transform-origin: center center;
     display: block;
     cursor: pointer;
   }}
 
-  /* TV BROADCAST LOWER-THIRD BANNER */
+  /* Subtle broadcast vignette around the pitch edges + click-to-play hint */
+  .pitch-cinema-vignette {{
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(9, 0, 12, 0.42) 0%, transparent 14%, transparent 86%, rgba(9, 0, 12, 0.48) 100%),
+      radial-gradient(circle at center, transparent 68%, rgba(9, 0, 12, 0.52) 100%);
+    z-index: 10;
+  }}
+
+  .pitch-cam-pill {{
+    position: absolute;
+    top: 10px;
+    left: 12px;
+    background: rgba(15, 1, 20, 0.78);
+    border: 1px solid rgba(0, 255, 133, 0.45);
+    color: var(--pl-green);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.9px;
+    padding: 4px 10px;
+    border-radius: 99px;
+    z-index: 15;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+  }}
+
+  .pitch-play-hint {{
+    position: absolute;
+    bottom: 9px;
+    right: 12px;
+    background: rgba(15, 1, 20, 0.72);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #e2e8f0;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 6px;
+    z-index: 15;
+    pointer-events: none;
+  }}
+
   .tv-lower-third {{
     margin-top: 10px;
     background: linear-gradient(90deg, #37003c 0%, #19011e 65%, #110014 100%);
@@ -1165,7 +1353,6 @@ html_component = f"""
   .lt-title {{ font-size: 16px; font-weight: 900; color: #fff; margin-top: 2px; }}
   .lt-metrics {{ font-size: 12px; color: #cbd5e1; font-weight: 600; margin-top: 2px; }}
 
-  /* 2D INTERACTIVE DIGITAL TWIN RADAR CANVAS */
   .radar-wrap {{
     margin-top: 12px;
     background: linear-gradient(180deg, #0b2912 0%, #071c0c 100%);
@@ -1193,7 +1380,6 @@ html_component = f"""
     background: #14532d;
   }}
 
-  /* INTERACTIVE CONTROL VS CHAOS WAVEFORM SCRUBBER */
   .wave-wrap {{
     margin-top: 10px;
     background: rgba(14, 1, 18, 0.92);
@@ -1218,7 +1404,6 @@ html_component = f"""
     background: rgba(255, 255, 255, 0.02);
   }}
 
-  /* RIGHT COLUMN: PLAYER ID SCOUTING DOSSIER */
   .dossier-banner {{
     display: flex;
     justify-content: space-between;
@@ -1255,7 +1440,6 @@ html_component = f"""
     text-transform: uppercase;
   }}
 
-  /* 6 TELEMETRY CARDS + 5-AXIS PENTAGON ROW */
   .telemetry-split {{
     display: grid;
     grid-template-columns: 1.45fr 0.85fr;
@@ -1311,7 +1495,6 @@ html_component = f"""
     align-items: center;
   }}
 
-  /* AI AGENT NARRATIVE BOX */
   .ai-card {{
     background: linear-gradient(135deg, rgba(0, 255, 133, 0.09) 0%, rgba(4, 245, 255, 0.05) 100%);
     border-left: 4px solid var(--pl-green);
@@ -1338,7 +1521,6 @@ html_component = f"""
     letter-spacing: 0.4px;
   }}
 
-  /* INTERACTIVE CLICKABLE PASS TABLE */
   .pl-table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; }}
   .pl-table th {{
     background: rgba(255, 255, 255, 0.08);
@@ -1389,7 +1571,6 @@ html_component = f"""
 </head>
 <body>
 
-<!-- TOP PREMIER LEAGUE LIVE SCOREBOARD & POSSESSION SPLIT -->
 <div class="pl-scoreboard">
   <div class="sb-left">
     <span class="pl-badge">🦁 PREMIER LEAGUE AI</span>
@@ -1416,7 +1597,6 @@ html_component = f"""
   </div>
 </div>
 
-<!-- MASTER PLAYBACK, SPEED CONTROLS & QUICK-JUMP EVENT BAR -->
 <div class="ctrl-bar">
   <button class="play-btn" id="masterPlayBtn" onclick="togglePlay()">▶️ PLAY BROADCAST</button>
   <button class="step-btn" onclick="stepFrames(-1)" title="Step Back 1 Frame">⏮️ -1F</button>
@@ -1436,12 +1616,15 @@ html_component = f"""
 </div>
 
 <div class="main-grid">
-  <!-- LEFT COLUMN: VIDEO + LOWER-THIRD + INTERACTIVE 2D RADAR + MOMENTUM WAVEFORM -->
   <div class="glass-card">
-    <div class="video-shell">
-      <video id="matchVideo" controls playsinline preload="auto">
+    <!-- PITCH-ONLY CROPPED CINEMA VIEWPORT (NO STADIUM, NO DUGOUTS, NO WATERMARK) -->
+    <div class="video-shell" onclick="togglePlay()" title="Click pitch to Play / Pause">
+      <video id="matchVideo" playsinline preload="auto">
         <source src="data:video/mp4;base64,{video_b64}" type="video/mp4">
       </video>
+      <div class="pitch-cinema-vignette"></div>
+      <div class="pitch-cam-pill">🎯 TACTICAL PITCH-CAM • 60-FPS CV TRACKING</div>
+      <div class="pitch-play-hint" id="pitchPlayHint">🖱️ Click Pitch to Play / Pause</div>
     </div>
 
     <div class="tv-lower-third">
@@ -1456,7 +1639,6 @@ html_component = f"""
       </div>
     </div>
 
-    <!-- INTERACTIVE 2D DIGITAL TWIN TACTICAL RADAR CANVAS -->
     <div class="radar-wrap">
       <div class="radar-header">
         <span id="radarLeftGoalLbl" style="color:var(--pl-pink);">🥅 LEFT: TEAM 1 GK</span>
@@ -1466,7 +1648,6 @@ html_component = f"""
       <canvas id="pitchCanvas" width="760" height="225"></canvas>
     </div>
 
-    <!-- CLICK-TO-SEEK CONTROL VS CHAOS WAVEFORM SCRUBBER -->
     <div class="wave-wrap">
       <div class="wave-header">
         <span>📈 SPATIAL CONTROL (+100 GREEN) VS. CHAOS (-100 PINK) MOMENTUM WAVEFORM</span>
@@ -1476,7 +1657,6 @@ html_component = f"""
     </div>
   </div>
 
-  <!-- RIGHT COLUMN: LIVE PLAYER #ID DOSSIER + 5-AXIS RADAR PENTAGON + AI NARRATOR + CLICKABLE TABLE -->
   <div class="glass-card">
     <div class="dossier-banner">
       <div>
@@ -1491,7 +1671,6 @@ html_component = f"""
       </div>
     </div>
 
-    <!-- 6 METRIC CARDS + 5-AXIS ATTRIBUTE RADAR PENTAGON -->
     <div class="telemetry-split">
       <div class="metrics-grid">
         <div class="m-card">
@@ -1537,7 +1716,6 @@ html_component = f"""
         </div>
       </div>
 
-      <!-- 5-AXIS SVG RADAR PENTAGON -->
       <div class="pentagon-box">
         <div style="font-size:10px; font-weight:900; color:var(--pl-cyan); letter-spacing:0.6px;">
           🕸️ 5-AXIS ATTRIBUTE RADAR
@@ -1549,16 +1727,14 @@ html_component = f"""
       </div>
     </div>
 
-    <!-- AI MULTI-AGENT NARRATIVE -->
     <div class="ai-card">
       <div class="ai-header">
         <span id="agentTitle">🧠 Live AI Agent Breakdown</span>
-        <span style="font-size:10px; color:var(--pl-cyan); font-weight:800;">MICROSOFT FOUNDRY SYNC</span>
+        <span style="font-size:10px; color:var(--pl-cyan); font-weight:800;">60-FPS TELEMETRY SYNC</span>
       </div>
       <div id="agentBody">Click Play on the video to stream synchronized telemetry...</div>
     </div>
 
-    <!-- INTERACTIVE PASS & RECEPTION TABLE -->
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
       <span style="font-size:11px; font-weight:900; color:var(--pl-cyan); text-transform:uppercase;" id="tableHeader">
         📋 Pass & Reception Events Involving Player ID #8:
@@ -1693,11 +1869,13 @@ function onManualSelect() {{
 video.addEventListener('play', () => {{
   playBtn.textContent = '⏸️ PAUSE BROADCAST';
   playBtn.style.background = 'linear-gradient(135deg, #facc15 0%, #eab308 100%)';
+  document.getElementById('pitchPlayHint').textContent = '🟢 LIVE STREAMING PITCH FEED';
 }});
 
 video.addEventListener('pause', () => {{
   playBtn.textContent = '▶️ PLAY BROADCAST';
   playBtn.style.background = 'linear-gradient(135deg, #00ff85 0%, #059669 100%)';
+  document.getElementById('pitchPlayHint').textContent = '🖱️ Click Pitch to Play / Pause';
 }});
 
 video.addEventListener('timeupdate', updateUI);
@@ -2184,4 +2362,106 @@ updateUI();
 </html>
 """
 
-components.html(html_component, height=960, scrolling=True)
+components.html(html_component, height=920, scrolling=True)
+
+# ============================================================
+# INTERACTIVE AGENTIC AI TACTICAL COPILOT & OPERATING GUIDE
+# ============================================================
+st.markdown(
+    """
+    <div style="background:linear-gradient(90deg,#1f0324 0%,#37003c 50%,#1f0324 100%);border:1px solid rgba(0,255,133,0.35);border-radius:14px;padding:14px 20px;margin-top:8px;margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:900;color:#00ff85;letter-spacing:1px;">MICROSOFT AI FOUNDRY × MULTI-AGENT ORCHESTRATOR</div>
+        <div style="font-size:20px;font-weight:900;color:#ffffff;margin-top:2px;">🤖 Interactive MatchMind Agentic Copilot & Framework Operating Guide</div>
+        <div style="font-size:12.5px;color:#cbd5e1;margin-top:2px;">Ask any question about a selected Player #ID's dribbles, passes, why Control vs. Chaos shifts, or how to operate the broadcast studio.</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+q_col1, q_col2, q_col3, q_col4 = st.columns(4)
+with q_col1:
+    if st.button(
+        f"⚡ Explain ID #{selected_cloud_pid} Dribbles & Passes",
+        use_container_width=True,
+    ):
+        with st.spinner("🤖 Analyzing Player Dribbles & Passes..."):
+            st.session_state["agent_response"] = run_matchmind_agent(
+                user_query=f"Give a deep-dive analysis of Player ID #{selected_cloud_pid}'s dribbles, ball carries, pass attempts, receptions, and defenders bypassed.",
+                selected_pid=selected_cloud_pid,
+                js_payload=js_payload,
+                language=language,
+                persona=agent_mode,
+                azure_endpoint=azure_endpoint,
+                azure_key=azure_key,
+                use_cloud_llm=True,
+            )
+with q_col2:
+    if st.button("📈 Explain Control vs. Chaos Shifts", use_container_width=True):
+        with st.spinner("🤖 Analyzing Spatial Control vs. Chaos..."):
+            st.session_state["agent_response"] = run_matchmind_agent(
+                user_query="Explain exactly how the Control vs. Chaos index works, why it starts in Chaos during the turnover, and why it shifts to Unpressed Control when defenders have space.",
+                selected_pid=selected_cloud_pid,
+                js_payload=js_payload,
+                language=language,
+                persona=agent_mode,
+                azure_endpoint=azure_endpoint,
+                azure_key=azure_key,
+                use_cloud_llm=True,
+            )
+with q_col3:
+    if st.button("🎯 Compare All 9 Pass Events & xP%", use_container_width=True):
+        with st.spinner("🤖 Evaluating All 9 Pass Events..."):
+            st.session_state["agent_response"] = run_matchmind_agent(
+                user_query="List and evaluate all 9 pass events in the match, including distance, ball speed, defenders bypassed, expected pass completion (xP%), and turnovers.",
+                selected_pid=selected_cloud_pid,
+                js_payload=js_payload,
+                language=language,
+                persona=agent_mode,
+                azure_endpoint=azure_endpoint,
+                azure_key=azure_key,
+                use_cloud_llm=True,
+            )
+with q_col4:
+    if st.button("🧭 Framework Operating Manual", use_container_width=True):
+        st.session_state["agent_response"] = run_matchmind_agent(
+            user_query="Provide a clear, step-by-step operating guideline on how a judge, coach, or analyst should use every interactive feature of the MatchMind AI Broadcast Hub.",
+            selected_pid=selected_cloud_pid,
+            js_payload=js_payload,
+            language=language,
+            persona=agent_mode,
+            azure_endpoint=azure_endpoint,
+            azure_key=azure_key,
+            use_cloud_llm=False,
+        )
+
+prompt_col, btn_col = st.columns([4.2, 1])
+with prompt_col:
+    user_custom_prompt = st.text_input(
+        "💬 Ask MatchMind Agentic AI anything (Player #ID dribbles, passes, Control vs. Chaos, or Operating Guide):",
+        placeholder=f"e.g., Why is Player ID #{selected_cloud_pid} rated high in Press Resistance, and how do I use the 2D radar?",
+    )
+with btn_col:
+    st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+    ask_clicked = st.button("🚀 Ask Agent", use_container_width=True)
+
+if ask_clicked and user_custom_prompt.strip():
+    with st.spinner("🤖 Querying Microsoft AI Foundry Agent..."):
+        st.session_state["agent_response"] = run_matchmind_agent(
+            user_query=user_custom_prompt.strip(),
+            selected_pid=selected_cloud_pid,
+            js_payload=js_payload,
+            language=language,
+            persona=agent_mode,
+            azure_endpoint=azure_endpoint,
+            azure_key=azure_key,
+            use_cloud_llm=True,
+        )
+
+st.markdown(
+    """
+    <div style="background:rgba(28,7,35,0.92);border-left:5px solid #00ff85;border-top:1px solid rgba(255,255,255,0.12);border-right:1px solid rgba(255,255,255,0.12);border-bottom:1px solid rgba(255,255,255,0.12);padding:16px 20px;border-radius:12px;margin-top:8px;">
+    """,
+    unsafe_allow_html=True,
+)
+st.markdown(st.session_state["agent_response"])
+st.markdown("</div>", unsafe_allow_html=True)
