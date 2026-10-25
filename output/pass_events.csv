@@ -1,0 +1,10 @@
+﻿event_id,timestamp_seconds,frame,event_type,passer_id,receiver_id,passer_team,receiver_team,outcome_candidate,evidence
+1,1.167,29,pass_candidate,8,28,0,1,interception_or_turnover_candidate,"Flight=0.12s, Travel=344.2px"
+2,2.917,71,pass_candidate,28,14,1,0,interception_or_turnover_candidate,"Flight=1.29s, Travel=1180.6px"
+3,5.083,123,pass_candidate,14,10,0,0,completed_pass_same_team,"Flight=1.67s, Travel=448.0px"
+4,5.833,141,pass_candidate,5,4,0,0,completed_pass_same_team,"Flight=0.17s, Travel=673.7px"
+5,6.333,153,pass_candidate,4,12,0,0,direct_completed_pass_same_team,"Flight=0.21s, Travel=648.1px"
+6,8.75,211,pass_candidate,12,5,0,0,completed_pass_same_team,"Flight=0.12s, Travel=184.7px"
+7,11.042,266,pass_candidate,5,12,0,0,completed_pass_same_team,"Flight=1.67s, Travel=175.2px"
+8,15.125,364,pass_candidate,12,13,0,0,completed_pass_same_team,"Flight=3.71s, Travel=508.3px"
+9,23.25,559,pass_candidate,13,6,0,0,completed_pass_same_team,"Flight=6.88s, Travel=683.0px"

@@ -1,0 +1,10 @@
+﻿event_id,timestamp_seconds,frame,event_type,passer_id,receiver_id,passer_team,receiver_team,outcome_candidate,evidence,flight_s,travel_px,travel_m,ball_speed_px_s,ball_speed_kmh,opponents_in_corridor,receiver_defender_dist_px,pass_difficulty_rating,expected_pass_completion_xp
+1,1.167,29,pass_candidate,8,28,0,1,interception_or_turnover_candidate,"Flight=0.12s, Travel=344.2px",0.12,344.2,18.82,2868.3,98.0,1,0.6,51.7,66.4
+2,2.917,71,pass_candidate,28,14,1,0,interception_or_turnover_candidate,"Flight=1.29s, Travel=1180.6px",1.29,1180.6,64.56,915.2,81.1,13,0.6,98.0,36.3
+3,5.083,123,pass_candidate,14,10,0,0,completed_pass_same_team,"Flight=1.67s, Travel=448.0px",1.67,448.0,24.5,268.3,23.8,1,210.3,31.4,79.6
+4,5.833,141,pass_candidate,5,4,0,0,completed_pass_same_team,"Flight=0.17s, Travel=673.7px",0.17,673.7,36.84,3962.9,98.0,0,250.0,29.9,80.6
+5,6.333,153,pass_candidate,4,12,0,0,direct_completed_pass_same_team,"Flight=0.21s, Travel=648.1px",0.21,648.1,35.44,3086.2,98.0,0,145.4,33.6,78.2
+6,8.75,211,pass_candidate,12,5,0,0,completed_pass_same_team,"Flight=0.12s, Travel=184.7px",0.12,184.7,10.1,1539.2,98.0,0,250.0,12.0,92.2
+7,11.042,266,pass_candidate,5,12,0,0,completed_pass_same_team,"Flight=1.67s, Travel=175.2px",1.67,175.2,9.58,104.9,14.0,0,250.0,12.0,92.2
+8,15.125,364,pass_candidate,12,13,0,0,completed_pass_same_team,"Flight=3.71s, Travel=508.3px",3.71,508.3,27.8,137.0,14.0,0,250.0,22.6,85.3
+9,23.25,559,pass_candidate,13,6,0,0,completed_pass_same_team,"Flight=6.88s, Travel=683.0px",6.88,683.0,37.35,99.3,14.0,0,127.5,37.6,75.6
